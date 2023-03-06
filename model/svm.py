@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.model_selection import KFold
 from sklearn.metrics import accuracy_score
 import pandas
+pandas.options.mode.chained_assignment = None  # default='warn'
 import numpy as np
 import matplotlib.pyplot as plt
 from time import process_time
@@ -66,15 +67,19 @@ class Preprocessor:
             x = (x - mean) / sd
         '''
         for column in df:
-            if column != prediction_class:
-                mean = None
-                std = None
-                if not test:
-                    self.means[column] = df[column].mean()
-                    self.stds[column] = df[column].std()
-                mean = self.means[column]
-                std = self.stds[column]
-                df[column] = (df[column] - mean) / std
+            if column == prediction_class:
+                ind = (df[column] == 0)
+                df[column][ind] = -1
+                continue
+                
+            mean = None
+            std = None
+            if not test:
+                self.means[column] = df[column].mean()
+                self.stds[column] = df[column].std()
+            mean = self.means[column]
+            std = self.stds[column]
+            df[column] = (df[column] - mean) / std
 
     def drop_outliers(self, X_csv, Y_csv):
         limit = {}
@@ -120,8 +125,11 @@ class Preprocessor:
         # read input
         df = pandas.read_csv(csv_file)
 
+        # 14319 rows required 1.6GB of memory to store Kernel Matrix
+        df = df.iloc[:6000, :]
+
         # split dataset into train and test
-        train, test = train_test_split(df, test_size=0.005, random_state=6)
+        train, test = train_test_split(df, test_size=0.2, random_state=6)
 
         # normalize columns
         self.normalize_columns(train, prediction_class)
@@ -184,10 +192,22 @@ def sklearn_svm():
     print(accuracy)
 
 
-def linear_kernel(x1, x2):
+def linear_kernel(x1, x2, gamma=0.1):
     return np.dot(x1, x2)
 
+def rbf_kernel(x1, x2, gamma=0.1):
+    """Computes the RBF kernel between two matrices of feature vectors"""
 
+    # Compute the pairwise squared Euclidean distances
+    dist = np.dot((x1 - x2).T, (x1 - x2))
+
+    # Compute the kernel matrix
+    K = np.exp(-gamma * dist)
+
+    return K
+
+
+############################################################################
 from scipy.optimize import minimize
 
 # returns negation of actual equation so that it can be minimized
@@ -205,27 +225,42 @@ def constraint(alphas, n, y):
     for i in range(n):
         total += alphas[i] * y[i]
     return total
+############################################################################
 
-def solve_dual_opt_probelm(x, y, kernel_function, c=1000):
-    n = len(y)
-    alphas = np.zeros(n)
-    bounds = [(0, np.inf) for i in range(n)]
-    constraint_1 = {'type': 'eq', 'fun': constraint, 'args': (n, y)}
-    constraints = [constraint_1]
+
+from cvxopt import matrix, solvers
+
+def solve_dual_opt_probelm(x, y, kernel_function, c=1000, gamma=0.1):
+    m, n = x.shape
     
     # precompute kernel_fuction values
-    K = np.zeros((n, n))
-    for i in range(n):
-        for j in range(i, n):
-            K[i][j] = kernel_function(x[i], x[j])
+    K = np.zeros((m, m))
+    for i in range(m):
+        for j in range(i, m):
+            K[i][j] = kernel_function(x[i], x[j], gamma)
             # symmetric kernel function
             K[j][i] = K[i][j]
+    print('done computing kernel matrix.')
 
-    print('done computing kernel values.')
+    y = y.astype(float)
+    z = np.atleast_2d(y)
+    coeff = np.matmul(z.T, z)
+    P = matrix(coeff * K)
+    q = matrix(np.ones((m, 1)) * -1)
+    A = matrix(y.reshape(1, -1))
+    b = matrix(np.zeros(1))
+    # G = matrix(np.eye(m) * -1)
+    # h = matrix(np.zeros(m))
+    G = matrix(np.vstack((np.eye(m)*-1, np.eye(m))))
+    h = matrix(np.hstack((np.zeros(m), np.ones(m) * c)))
+
+    opts = {'maxiters' : 10}
+    solution = solvers.qp(P, q, G, h, A, b, options=opts)
+    return solution
     
     # minimize
-    sol = minimize(objective, alphas, args=(n, x, y, K), method='SLSQP', bounds=bounds, constraints=constraints)
-    return sol
+    # sol = minimize(objective, alphas, args=(n, x, y, K), method='SLSQP', bounds=bounds, constraints=constraints)
+    # return sol
 
 def calculate_weights(alphas, x, y):
     n = len(x)
@@ -240,6 +275,15 @@ def calculate_weights(alphas, x, y):
 def calculate_bias(w, p, o):
     return (o - np.dot(w, p))
 
+def predict(w, b, X_test):
+    y_pred = []
+    for x in X_test:
+        if np.dot(w, x) + b > 0:
+            y_pred.append(1)
+        else:
+            y_pred.append(-1)
+    return y_pred
+
 def task_1():
     X_train, y_train, X_test, y_test = Preprocessor().process("dataset/pulsar_star_dataset.csv", "Class")
     
@@ -249,21 +293,27 @@ def task_1():
     # x = ((3, 1), (3, -1), (6, 1), (6, -1), (1, 0), (0, 1), (0, -1), (-1, 0))
     # y = (1 ,1 , 1, 1, -1, -1, -1, -1)
     # x, y = np.array(x), np.array(y)
-    # sol = solve_dual_opt_probelm(x, y, linear_kernel)
-    # w = calculate_weights(sol.x, x, y)
-    # b = calculate_bias(w, x[0], y[0])
     
-
-    # taking too much time...
+    # train
     x, y = X_train.to_numpy(), y_train.to_numpy()
     print('dataset size: {}, dimension: {}'.format(len(x), len(x[0])))
-    sol = solve_dual_opt_probelm(x, y, linear_kernel)
-    w = calculate_weights(sol.x, x, y)
-    b = calculate_bias(w, x[0], y[0])
+
+    # sol = solve_dual_opt_probelm(x, y, linear_kernel, c=1)
+    sol = solve_dual_opt_probelm(x, y, linear_kernel, c=1, gamma=0.125)
+    alphas = np.array(sol['x'])
+    ind = (alphas > 1e-6).flatten()
+    print('support vectors:')
+    print(x[ind])
+    w = calculate_weights(alphas[ind], x[ind], y[ind])
+    b = calculate_bias(w, x[ind][0], y[ind][0])
     t2 = process_time()
-    print(t2 - t1)
 
     print(w, b)
+
+    y_pred = predict(w, b, X_test.to_numpy())
+    print(accuracy_score(y_test.to_list(), y_pred))
+
+    print(t2 - t1)
 
 if __name__ == "__main__":
 
