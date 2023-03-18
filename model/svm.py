@@ -195,6 +195,10 @@ def sklearn_svm():
 def linear_kernel(x1, x2, gamma=0.1):
     return np.dot(x1, x2)
 
+
+def quadratic_kernel(x1, x2, gamma=0.1):
+    return (np.dot(x1, x2)+1) ** 2
+
 def rbf_kernel(x1, x2, gamma=0.1):
     """Computes the RBF kernel between two matrices of feature vectors"""
 
@@ -217,7 +221,7 @@ def objective(alphas, n, x, y, K):
     for i in range(n):
         for j in range(n):
             second_term += alphas[i] * alphas[j] * y[i] * y[j] * K[i][j]
-    ret = alphas_sum - 0.5 * second_term
+    ret = alphas_sum - 0.5 * second_term    
     return -(ret)
 
 def constraint(alphas, n, y):
@@ -243,8 +247,9 @@ def solve_dual_opt_probelm(x, y, kernel_function, c=1000, gamma=0.1):
     print('done computing kernel matrix.')
 
     y = y.astype(float)
-    z = np.atleast_2d(y)
-    coeff = np.matmul(z.T, z)
+    # z = np.atleast_2d(y)
+    # coeff = np.matmul(z.T, z)
+    coeff = np.outer(y, y)
     P = matrix(coeff * K)
     q = matrix(np.ones((m, 1)) * -1)
     A = matrix(y.reshape(1, -1))
@@ -304,8 +309,8 @@ def task_1():
     ind = (alphas > 1e-6).flatten()
     print('support vectors:')
     print(x[ind])
-    w = calculate_weights(alphas[ind], x[ind], y[ind])
-    b = calculate_bias(w, x[ind][0], y[ind][0])
+    w = calculate_weights(alphas, x, y) # Approximation is not done while calculating weights
+    b = calculate_bias(w, x[ind][0], y[ind][0]) # Approximation is done while calculating bias
     t2 = process_time()
 
     print(w, b)
@@ -313,7 +318,7 @@ def task_1():
     y_pred = predict(w, b, X_test.to_numpy())
     print(accuracy_score(y_test.to_list(), y_pred))
 
-    print(t2 - t1)
+    print("Training Time: ", t2 - t1)
 
 if __name__ == "__main__":
 
