@@ -1,7 +1,7 @@
 # Group: 10
 # Rollno: 19EE10050, 19EC10041, 22CS60R18
-# Project no: 
-# Project Title: 
+# Project Code: PSSVM
+# Project Title: Pulsar Star Classification using Support Vector Machines
 
 
 from sklearn import svm
@@ -13,6 +13,9 @@ pandas.options.mode.chained_assignment = None  # default='warn'
 import numpy as np
 import matplotlib.pyplot as plt
 from time import process_time
+from tqdm import tqdm
+
+from cvxopt import matrix, solvers
 
 
 class Preprocessor:
@@ -126,7 +129,7 @@ class Preprocessor:
         df = pandas.read_csv(csv_file)
 
         # 14319 rows required 1.6GB of memory to store Kernel Matrix
-        df = df.iloc[:6000, :]
+        df = df.iloc[:2000, :]
 
         # split dataset into train and test
         train, test = train_test_split(df, test_size=0.2, random_state=6)
@@ -141,28 +144,136 @@ class Preprocessor:
 
         return X_train, Y_train.iloc[:, 0], X_test, Y_test.iloc[:, 0]
     
+class SVM:
+
+    def __init__(self, kernel='linear', C=1.0, gamma=0.125):
+        self.kernel = kernel
+        self.C = C
+        self.gamma = gamma
+        self.alphas = None
+        self.weights = None
+        self.bias = None
+        self.support_vectors = []
+
+    def kernel_function(self, x1, x2):
+        if self.kernel == 'linear':
+            return np.dot(x1, x2)
+
+        elif self.kernel == 'quadratic':
+            return (np.dot(x1, x2)+1) ** 2 
+
+        else:
+            dist = np.dot((x1 - x2).T, (x1 - x2))
+            K = np.exp(-self.gamma * dist)
+            return K
+
+    def calculate_weights(self, alphas, x, y):
+        y = y.reshape(-1,1) # Convert the y into same form as alphas... dim(alphas) : m * 1
+        w = ((y*alphas).T)@x
+        return w
+
+    def calculate_bias(self, w, x_sv, y_sv):
+        return (y_sv - np.dot(x_sv,w))
+
+    def qp_solver(self, x, y):
+        m, n = x.shape # m : no. of examples in training data, n : no. of attributes in training data
+        K = np.zeros((m, m))
+        for i in tqdm(range(m)):
+            for j in range(i, m):
+                K[i][j] = self.kernel_function(x[i], x[j])
+                K[j][i] = K[i][j] # symmetric kernel function
+
+        y = y.astype(float)
+        coeff = np.outer(y,y)
+        P = matrix(coeff * K)
+        q = matrix(np.ones((m, 1)) * -1)
+        A = matrix(y.reshape(1, -1))
+        b = matrix(np.zeros(1))
+        G = matrix(np.vstack((np.eye(m)*-1, np.eye(m))))
+        h = matrix(np.hstack((np.zeros(m), np.ones(m) * self.C)))
+        opts = {'maxiters' : 10, 'show_progress' : True}
+        solution = solvers.qp(P, q, G, h, A, b, options=opts)
+        return solution
+
+    def fit(self, X_train, y_train):
+        print("--------------------------------Training--------------------------------")
+        t1 = process_time()
+        x, y = X_train.to_numpy(), y_train.to_numpy()
+        print('dataset size: {}, dimension: {}'.format(len(x), len(x[0])))
+
+        sol = self.qp_solver(x, y)
+        alphas = np.array(sol['x'])
+
+        sv1 = np.where(alphas <= 1 + 1e-15)
+        sv2 = np.where(alphas > 1e-2)
+        self.support_vector_indices = np.intersect1d(sv1, sv2)
+        sv = (alphas >= 1e-6).flatten()
+        x_sv = x[sv]
+        y_sv = y[sv]
+
+        weights = self.calculate_weights(alphas, x, y) # Using the entire dataset to calculate weights
+        b = self.calculate_bias(weights[0], x_sv, y_sv) # Using only the support vectors to calculate b vector
+        bias = np.sum(b)/b.size  # Take average over all the support vectors to get the bias
+
+        for p in x:
+            value = np.abs(np.dot(weights, p) + bias)
+            if value >= 0.9 and value <= 1 + 1e-15:
+                self.support_vectors.append(p)
+        self.support_vectors = np.array(self.support_vectors)
+
+        t2 = process_time()
+
+        print('\nResults ')
+        print('Weights: ', weights)
+        print('Bias: ', bias)
+        print("\nTraining Time: ", t2 - t1)
+        print("------------------------------------------------------------------------")
+
+        self.weights = weights
+        self.bias = bias
+        self.alphas = alphas
+        return weights, bias
+
+    def predict(self, X_test):
+        X_test = X_test if isinstance(X_test, np.ndarray) else X_test.to_numpy()
+        y_pred = []
+        for x in X_test:
+            if np.dot(self.weights, x) + self.bias > 0:
+                y_pred.append(1)
+            else:
+                y_pred.append(-1)
+        return np.array(y_pred)
+
+    def score(self, y_test, y_pred):
+        print("\nAccuracy: ", accuracy_score(y_test.to_list(), y_pred)) # Accuracy
+
 def make_meshgrid(x, y, h=.02):
     x_min, x_max = x.min() - 1, x.max() + 1
     y_min, y_max = y.min() - 1, y.max() + 1
     xx, yy = np.meshgrid(np.arange(x_min, x_max, h), np.arange(y_min, y_max, h))
     return xx, yy
 
-def plot_contours(ax, clf, xx, yy, **params):
-    Z = clf.predict(np.c_[xx.ravel(), yy.ravel()])
+def plot_contours(ax, model, xx, yy, **params):
+    Z = model.predict(np.c_[xx.ravel(), yy.ravel()])
     Z = Z.reshape(xx.shape)
     out = ax.contourf(xx, yy, Z, **params)
     return out
 
-def visualize_boundary():
+def visualize_boundary(kernel='linear', C=1, gamma=0.125, is_sklearn=True):
     X_train, y_train, X_test, y_test = Preprocessor().process("dataset/pulsar_star_dataset.csv", "Class")
-    model = svm.SVC(kernel='linear')
-    clf = model.fit(X_train.iloc[:, :2], y_train)
-    y_pred = model.predict(X_test.iloc[:, :2])
+    columns = [2, 5]
+    X_train = X_train.iloc[:, columns]
+    X_test = X_test.iloc[:, columns]
+
+    model = svm.SVC(kernel='poly' if kernel=='quadratic' else kernel, C=C, gamma=gamma, degree=2) if (is_sklearn == True) \
+           else SVM(kernel=kernel, C=C, gamma=gamma)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
     print(accuracy)
 
     title = "SVC with linear kernel"
-
+    
     X0, X1 = X_train.iloc[:, 0], X_train.iloc[:, 1]
     y = y_train
 
@@ -172,8 +283,28 @@ def visualize_boundary():
     # setup grid
     xx, yy = make_meshgrid(X0, X1)
 
-    plot_contours(ax, clf, xx, yy, cmap=plt.cm.coolwarm, alpha=0.8)
+    plot_contours(ax, model, xx, yy, cmap=plt.cm.coolwarm, alpha=0.8)
     ax.scatter(X0, X1, c=y, cmap=plt.cm.coolwarm, s=20, edgecolors='k')
+    
+    # support vectors
+    support_vector_indices = None
+    v = None
+    if is_sklearn:
+        # obtain the support vectors through the decision function
+        decision_function = model.decision_function(X_train)
+        A = np.where(np.abs(decision_function) <= 1 + 1e-15)
+        B = np.where(np.abs(decision_function) > 0.9)
+        support_vector_indices = np.intersect1d(A, B)
+        # support_vector_indices = np.where(np.abs(decision_function) <= 1 + 1e-15)[0]
+        v = X_train.to_numpy()[support_vector_indices]
+    else:
+        # support_vector_indices = model.support_vector_indices
+        v = model.support_vectors
+
+    # support_vector_indices = np.where(np.abs(decision_function) <= 1 + 1e-15)[0]
+    
+    ax.scatter(v.T[0], v.T[1], color=['white' for i in range(len(v))], s=20, edgecolors='k')
+
     ax.set_ylabel(X_train.columns[0])
     ax.set_xlabel(X_train.columns[1])
     ax.set_xticks(())
@@ -191,137 +322,7 @@ def sklearn_svm():
     accuracy = accuracy_score(y_test, y_pred)
     print(accuracy)
 
-
-def linear_kernel(x1, x2, gamma=0.1):
-    return np.dot(x1, x2)
-
-
-def quadratic_kernel(x1, x2, gamma=0.1):
-    return (np.dot(x1, x2)+1) ** 2
-
-def rbf_kernel(x1, x2, gamma=0.1):
-    """Computes the RBF kernel between two matrices of feature vectors"""
-
-    # Compute the pairwise squared Euclidean distances
-    dist = np.dot((x1 - x2).T, (x1 - x2))
-
-    # Compute the kernel matrix
-    K = np.exp(-gamma * dist)
-
-    return K
-
-
-############################################################################
-from scipy.optimize import minimize
-
-# returns negation of actual equation so that it can be minimized
-def objective(alphas, n, x, y, K):
-    alphas_sum = np.sum(alphas)
-    second_term = 0
-    for i in range(n):
-        for j in range(n):
-            second_term += alphas[i] * alphas[j] * y[i] * y[j] * K[i][j]
-    ret = alphas_sum - 0.5 * second_term    
-    return -(ret)
-
-def constraint(alphas, n, y):
-    total = 0
-    for i in range(n):
-        total += alphas[i] * y[i]
-    return total
-############################################################################
-
-
-from cvxopt import matrix, solvers
-
-def solve_dual_opt_probelm(x, y, kernel_function, c=1000, gamma=0.1):
-    m, n = x.shape
-    
-    # precompute kernel_fuction values
-    K = np.zeros((m, m))
-    for i in range(m):
-        for j in range(i, m):
-            K[i][j] = kernel_function(x[i], x[j], gamma)
-            # symmetric kernel function
-            K[j][i] = K[i][j]
-    print('done computing kernel matrix.')
-
-    y = y.astype(float)
-    # z = np.atleast_2d(y)
-    # coeff = np.matmul(z.T, z)
-    coeff = np.outer(y, y)
-    P = matrix(coeff * K)
-    q = matrix(np.ones((m, 1)) * -1)
-    A = matrix(y.reshape(1, -1))
-    b = matrix(np.zeros(1))
-    # G = matrix(np.eye(m) * -1)
-    # h = matrix(np.zeros(m))
-    G = matrix(np.vstack((np.eye(m)*-1, np.eye(m))))
-    h = matrix(np.hstack((np.zeros(m), np.ones(m) * c)))
-
-    opts = {'maxiters' : 10}
-    solution = solvers.qp(P, q, G, h, A, b, options=opts)
-    return solution
-    
-    # minimize
-    # sol = minimize(objective, alphas, args=(n, x, y, K), method='SLSQP', bounds=bounds, constraints=constraints)
-    # return sol
-
-def calculate_weights(alphas, x, y):
-    n = len(x)
-    d = len(x[0])
-    
-    w = np.zeros(d)
-    for i in range(d):
-        for j in range(n):
-            w[i] += alphas[j] * y[j] * x[j][i]
-    return w
-
-def calculate_bias(w, p, o):
-    return (o - np.dot(w, p))
-
-def predict(w, b, X_test):
-    y_pred = []
-    for x in X_test:
-        if np.dot(w, x) + b > 0:
-            y_pred.append(1)
-        else:
-            y_pred.append(-1)
-    return y_pred
-
-def task_1():
-    X_train, y_train, X_test, y_test = Preprocessor().process("dataset/pulsar_star_dataset.csv", "Class")
-    
-    t1 = process_time()
-
-    # Example-1:
-    # x = ((3, 1), (3, -1), (6, 1), (6, -1), (1, 0), (0, 1), (0, -1), (-1, 0))
-    # y = (1 ,1 , 1, 1, -1, -1, -1, -1)
-    # x, y = np.array(x), np.array(y)
-    
-    # train
-    x, y = X_train.to_numpy(), y_train.to_numpy()
-    print('dataset size: {}, dimension: {}'.format(len(x), len(x[0])))
-
-    # sol = solve_dual_opt_probelm(x, y, linear_kernel, c=1)
-    sol = solve_dual_opt_probelm(x, y, linear_kernel, c=1, gamma=0.125)
-    alphas = np.array(sol['x'])
-    ind = (alphas > 1e-6).flatten()
-    print('support vectors:')
-    print(x[ind])
-    w = calculate_weights(alphas, x, y) # Approximation is not done while calculating weights
-    b = calculate_bias(w, x[ind][0], y[ind][0]) # Approximation is done while calculating bias
-    t2 = process_time()
-
-    print(w, b)
-
-    y_pred = predict(w, b, X_test.to_numpy())
-    print(accuracy_score(y_test.to_list(), y_pred))
-
-    print("Training Time: ", t2 - t1)
-
 if __name__ == "__main__":
 
     # sklearn_svm()
-    # visualize_boundary()
-    task_1()
+    visualize_boundary(kernel='quadratic', C=0.1, is_sklearn=False)
