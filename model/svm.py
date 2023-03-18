@@ -259,8 +259,8 @@ def plot_contours(ax, model, xx, yy, **params):
     out = ax.contourf(xx, yy, Z, **params)
     return out
 
-def visualize_boundary(kernel='linear', C=1, gamma=0.125, is_sklearn=True):
-    X_train, y_train, X_test, y_test = Preprocessor().process("dataset/pulsar_star_dataset.csv", "Class")
+def visualize_boundary(kernel='linear', C=1, gamma=0.125, is_sklearn=True, is_test=False):
+    X_train, y_train, X_test, y_test = Preprocessor().process("pulsar_star_dataset.csv", "Class")
     columns = [2, 5]
     X_train = X_train.iloc[:, columns]
     X_test = X_test.iloc[:, columns]
@@ -272,19 +272,28 @@ def visualize_boundary(kernel='linear', C=1, gamma=0.125, is_sklearn=True):
     accuracy = accuracy_score(y_test, y_pred)
     print(accuracy)
 
-    title = "SVC with linear kernel"
+    title = "SVM with " + kernel + " kernel (Train)" 
+    title_t = "SVM with " + kernel + " kernel (Test)" 
     
     X0, X1 = X_train.iloc[:, 0], X_train.iloc[:, 1]
     y = y_train
 
+    X0_t, X1_t = X_test.iloc[:, 0], X_test.iloc[:, 1]
+    y_t = y_test   
+
     # Set-up 2x2 grid for plotting.
     fig, ax = plt.subplots()
+    fig_t, ax_t = plt.subplots()
 
     # setup grid
     xx, yy = make_meshgrid(X0, X1)
+    # xx_t, yy_t = make_meshgrid(X0_t, X1_t)
 
     plot_contours(ax, model, xx, yy, cmap=plt.cm.coolwarm, alpha=0.8)
     ax.scatter(X0, X1, c=y, cmap=plt.cm.coolwarm, s=20, edgecolors='k')
+
+    plot_contours(ax_t, model, xx, yy, cmap=plt.cm.coolwarm, alpha=0.8)
+    ax_t.scatter(X0_t, X1_t, c=y_t, cmap=plt.cm.coolwarm, s=20, edgecolors='k')
     
     # support vectors
     support_vector_indices = None
@@ -295,15 +304,12 @@ def visualize_boundary(kernel='linear', C=1, gamma=0.125, is_sklearn=True):
         A = np.where(np.abs(decision_function) <= 1 + 1e-15)
         B = np.where(np.abs(decision_function) > 0.9)
         support_vector_indices = np.intersect1d(A, B)
-        # support_vector_indices = np.where(np.abs(decision_function) <= 1 + 1e-15)[0]
         v = X_train.to_numpy()[support_vector_indices]
     else:
-        # support_vector_indices = model.support_vector_indices
         v = model.support_vectors
-
-    # support_vector_indices = np.where(np.abs(decision_function) <= 1 + 1e-15)[0]
     
     ax.scatter(v.T[0], v.T[1], color=['white' for i in range(len(v))], s=20, edgecolors='k')
+    ax_t.scatter(v.T[0], v.T[1], color=['white' for i in range(len(v))], s=20, edgecolors='k')
 
     ax.set_ylabel(X_train.columns[0])
     ax.set_xlabel(X_train.columns[1])
@@ -311,7 +317,15 @@ def visualize_boundary(kernel='linear', C=1, gamma=0.125, is_sklearn=True):
     ax.set_yticks(())
     ax.set_title(title)
     ax.legend()
+
+    ax_t.set_ylabel(X_test.columns[0])
+    ax_t.set_xlabel(X_test.columns[1])
+    ax_t.set_xticks(())
+    ax_t.set_yticks(())
+    ax_t.set_title(title_t)
+    ax_t.legend()
     plt.show()
+     
 
 
 def sklearn_svm():
